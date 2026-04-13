@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>封鎖線：防卡死推擠版</title>
+    <style>
+        body { margin: 0; background: #111; color: #eee; font-family: "Microsoft JhengHei", sans-serif; display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; overflow: hidden; }
+        #game-ui { width: 800px; display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; background: #222; padding: 15px; border-radius: 8px; border: 2px solid #444; box-sizing: border-box; }
+        #game-container { position: relative; width: 800px; height: 600px; background: #1a1a1a; border: 4px solid #555; overflow: hidden; }
+        
+        @keyframes shake {
+            0% { transform: translate(1px, 1px); }
+            20% { transform: translate(-3px, 0px); }
+            40% { transform: translate(3px, 2px); }
+            100% { transform: translate(0, 0); }
+        }
+
+        .entity { position: absolute; display: flex; justify-content: center; align-items: center; font-weight: bold; user-select: none; border-radius: 50%; }
+        .player { width: 36px; height: 36px; background: #3498db; border: 2px solid #fff; z-index: 100; }
+        .weapon-gun { border: 4px solid #f1c40f !important; box-shadow: 0 0 15px #f1c40f; }
+        .weapon-knife { border: 4px solid #34e7e4 !important; box-shadow: 0 0 15px #34e7e4; }
+        
+        .enemy { width: 30px; height: 30px; background: #e74c3c; border: 2px solid #c0392b; color: white; font-size: 10px; z-index: 50; }
+        .boss-5 { width: 50px; height: 50px; border: 4px solid #bdc3c7; box-shadow: 0 0 10px #bdc3c7; }
+        .boss-6 { width: 65px; height: 65px; border: 5px solid #f1c40f; box-shadow: 0 0 20px #f1c40f; }
+
+        .cover { position: absolute; background: #444; border: 2px solid #666; color: #888; font-size: 10px; z-index: 40; display: flex; align-items: center; justify-content: center; }
+        .bullet { width: 6px; height: 6px; background: #f1c40f; border-radius: 50%; position: absolute; z-index: 80; }
+        .slash-fx { width: 100px; height: 100px; border: 4px solid #34e7e4; border-radius: 50%; border-top-color: transparent; position: absolute; animation: slashAnim 0.15s forwards; z-index: 110; pointer-events: none; }
+        @keyframes slashAnim { 0% { transform: scale(0.5) rotate(0deg); } 100% { transform: scale(1.5) rotate(150deg); opacity: 0; } }
+        
+        .stat-val { font-size: 18px; font-weight: bold; color: #f1c40f; }
+        .overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.9); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 1000; text-align: center; }
+        button { padding: 12px 40px; font-size: 20px; background: #e67e22; border: none; color: white; cursor: pointer; border-radius: 5px; }
+    </style>
+</head>
+<body>
+
+    <div id="game-ui">
+        <div>層數: <span id="ui-layer" class="stat-val">1</span></div>
+        <div>血量: <span id="ui-hp" class="stat-val" style="color:#ff7675">50</span></div>
+        <div id="weapon-ui" class="stat-val" style="color:#f1c40f">模式: <span id="weap-name">槍</span> (<span id="ui-ammo">20</span>)</div>
+        <div>手榴彈: <span id="ui-grenade" class="stat-val">3</span></div>
+        <div>敵人: <span id="ui-enemy-count" class="stat-val">0</span></div>
+    </div>
+
+    <div id="game-container">
+        <div id="player" class="entity player weapon-gun">我</div>
+        <div id="overlay" class="overlay">
+            <h1>末日封鎖線：戰術突圍</h1>
+            <p>新增回推物理：防止卡入牆體</p>
+            <button onclick="startGame()">部署戰場</button>
+        </div>
+    </div>
+
+<script>
+    const cfg = { w: 800, h: 600, pSize: 36, bSpeed: 15 };
+    let game = { active: false, layer: 1, hp: 50, ammo: 20, grenades: 3, weapon: 'gun', px: 382, py: 500, keys: {}, enemies: [], covers: [], bullets: [] };
+
+    const container = document.getElementById('game-container');
+    const playerEl = document.getElementById('player');
+
+    window.onkeydown = (e) => {
+        game.keys[e.key.toLowerCase()] = true;
+        if(e.key.toLowerCase() === 'q') switchWeapon();
+        if(e.key.toLowerCase() === 'g' && game.active && game.grenades > 0) useGrenade();
+    };
+    window.onkeyup = (e) => game.keys[e.key.toLowerCase()] = false;
+
+    function switchWeapon() {
+        game.weapon = game.weapon === 'gun' ? 'knife' : 'gun';
+        const ui = document.getElementById('weapon-ui');
+        if(game.weapon === 'gun') {
+            ui.style.color = '#f1c40f'; document.getElementById('weap-name').innerText = '槍';
+            playerEl.className = 'entity player weapon-gun';
+        } else {
+            ui.style.color = '#34e7e4'; document.getElementById('weap-name').innerText = '刀';
+            playerEl.className = 'entity player weapon-knife';
+        }
+    }
+
+    function startGame() {
+        document.getElementById('overlay').style.display = 'none';
+        game.active = true;
+        initLevel();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function initLevel() {
+        container.querySelectorAll('.enemy, .cover, .bullet').forEach(el => el.remove());
+        game.enemies = []; game.covers = []; game.bullets = [];
+        
+        // 生成牆體
+        for(let i=0; i < 8 + game.layer; i++) {
+            const w = 50 + Math.random()*100, h = 50 + Math.random()*100;
+            const x = Math.random()*(700-w)+50, y = Math.random()*(300-h)+150;
+            const el = document.createElement('div');
+            el.className = 'cover'; el.style.width = w+'px'; el.style.height = h+'px';
+            el.style.left = x+'px'; el.style.top = y+'px';
+            container.appendChild(el);
+            game.covers.push({ x, y, w, h, hp: 150, el });
+        }
+
+        let gruntN = game.layer >= 5 ? 16 : Math.pow(2, game.layer);
+        for(let i=0; i<gruntN; i++) createEnemy('grunt');
+        if(game.layer === 5) for(let i=0; i<2; i++) createEnemy('boss5');
+        if(game.layer === 6) for(let i=0; i<2; i++) createEnemy('boss6');
+        updateUI();
+    }
+
+    function createEnemy(type) {
+        let hp = 30, size = 30, cls = 'enemy';
+        if(type === 'boss5') { hp = 120; size = 50; cls = 'enemy boss-5'; }
+        if(type === 'boss6') { hp = 180; size = 65; cls = 'enemy boss-6'; }
+        const el = document.createElement('div');
+        el.className = 'entity ' + cls;
+        container.appendChild(el);
+        game.enemies.push({ el, x: Math.random()*700, y: Math.random()*100, vx: (Math.random()-0.5)*4, vy: (Math.random()-0.5)*4, hp, size });
+    }
+
+    // 關鍵：回推與滑動邏輯
+    function resolveCollision(entity, size) {
+        // 邊界限制
+        if(entity.x < 0) entity.x = 0;
+        if(entity.x > 800 - size) entity.x = 800 - size;
+        if(entity.y < 0) entity.y = 0;
+        if(entity.y > 600 - size) entity.y = 600 - size;
+
+        // 牆體回推
+        for(let c of game.covers) {
+            if(entity.x < c.x + c.w && entity.x + size > c.x && entity.y < c.y + c.h && entity.y + size > c.y) {
+                // 計算四個方向的重疊深度
+                const dLeft = (entity.x + size) - c.x;
+                const dRight = (c.x + c.w) - entity.x;
+                const dTop = (entity.y + size) - c.y;
+                const dBottom = (c.y + c.h) - entity.y;
+
+                // 找最小重疊方向並推回
+                const min = Math.min(dLeft, dRight, dTop, dBottom);
+                if(min === dLeft) entity.x -= dLeft;
+                else if(min === dRight) entity.x += dRight;
+                else if(min === dTop) entity.y -= dTop;
+                else if(min === dBottom) entity.y += dBottom;
+            }
+        }
+    }
+
+    container.onmousedown = (e) => {
+        if(!game.active) return;
+        const rect = container.getBoundingClientRect();
+        const tx = e.clientX - rect.left, ty = e.clientY - rect.top;
+        if(game.weapon === 'gun' && game.ammo > 0) {
+            game.ammo--;
+            const angle = Math.atan2(ty - (game.py+18), tx - (game.px+18));
+            const el = document.createElement('div'); el.className = 'bullet'; container.appendChild(el);
+            game.bullets.push({ el, x: game.px+18, y: game.py+18, vx: Math.cos(angle)*cfg.bSpeed, vy: Math.sin(angle)*cfg.bSpeed, side:'player' });
+        } else if(game.weapon === 'knife') {
+            const fx = document.createElement('div'); fx.className = 'slash-fx'; fx.style.left = (game.px-32)+'px'; fx.style.top = (game.py-32)+'px';
+            container.appendChild(fx); setTimeout(()=>fx.remove(), 150);
+            game.enemies.forEach(en => {
+                if(Math.hypot(en.x+en.size/2 - (game.px+18), en.y+en.size/2 - (game.py+18)) < 85) {
+                    en.hp -= 30; if(en.hp <= 0) die(en);
+                }
+            });
+        }
+        updateUI();
+    };
+
+    function useGrenade() {
+        game.grenades--;
+        container.style.animation = 'shake 0.4s'; setTimeout(()=>container.style.animation='', 400);
+        game.enemies.slice(0, 15).forEach(en => { en.hp -= 30; if(en.hp <= 0) setTimeout(()=>die(en), 10); });
+        updateUI();
+    }
+
+    function gameLoop() {
+        if(!game.active) return;
+
+        // 移動玩家
+        if(game.keys['w']) game.py -= 4.5;
+        if(game.keys['s']) game.py += 4.5;
+        if(game.keys['a']) game.px -= 4.5;
+        if(game.keys['d']) game.px += 4.5;
+        
+        let pObj = { x: game.px, y: game.py };
+        resolveCollision(pObj, cfg.pSize);
+        game.px = pObj.x; game.py = pObj.y;
+        playerEl.style.left = game.px+'px'; playerEl.style.top = game.py+'px';
+
+        // 移動敵人
+        game.enemies.forEach(en => {
+            en.x += en.vx; en.y += en.vy;
+            let eObj = { x: en.x, y: en.y };
+            let oldX = en.x, oldY = en.y;
+            resolveCollision(eObj, en.size);
+            if(eObj.x !== oldX) en.vx *= -1;
+            if(eObj.y !== oldY) en.vy *= -1;
+            en.x = eObj.x; en.y = eObj.y;
+            
+            en.el.style.left = en.x+'px'; en.el.style.top = en.y+'px';
+            en.el.innerText = en.hp;
+            if(Math.random() < 0.01) { // 隨機射擊
+                const angle = Math.atan2(game.py+18 - (en.y+en.size/2), game.px+18 - (en.x+en.size/2));
+                const el = document.createElement('div'); el.className = 'bullet'; container.appendChild(el);
+                game.bullets.push({ el, x: en.x+en.size/2, y: en.y+en.size/2, vx: Math.cos(angle)*8, vy: Math.sin(angle)*8, side:'enemy' });
+            }
+        });
+
+        // 子彈邏輯
+        for(let i=game.bullets.length-1; i>=0; i--) {
+            let b = game.bullets[i]; b.x += b.vx; b.y += b.vy;
+            b.el.style.left = b.x+'px'; b.el.style.top = b.y+'px';
+            let hit = false;
+            for(let c of game.covers) if(b.x > c.x && b.x < c.x+c.w && b.y > c.y && b.y < c.y+c.h) { c.hp -= 15; hit = true; break; }
+            if(!hit) {
+                if(b.side === 'player') {
+                    game.enemies.forEach(en => {
+                        if(b.x > en.x && b.x < en.x+en.size && b.y > en.y && b.y < en.y+en.size) { en.hp -= 20; hit = true; if(en.hp <= 0) die(en); }
+                    });
+                } else if(Math.hypot(b.x - (game.px+18), b.y - (game.py+18)) < 18) { game.hp -= 10; hit = true; if(game.hp<=0) location.reload(); }
+            }
+            if(hit || b.x<0 || b.x>800 || b.y<0 || b.y>600) { b.el.remove(); game.bullets.splice(i,1); }
+        }
+
+        game.covers = game.covers.filter(c => {
+            if(c.hp <= 0) { c.el.remove(); return false; }
+            c.el.innerText = c.hp; return true;
+        });
+
+        if(game.enemies.length === 0) { game.layer++; if(game.layer > 6) alert("全數剿滅！"); else initLevel(); }
+        updateUI(); requestAnimationFrame(gameLoop);
+    }
+
+    function die(en) { 
+        if(!en.el.parentNode) return;
+        game.ammo = Math.min(20, game.ammo + 6);
+        en.el.remove(); game.enemies = game.enemies.filter(e => e !== en); 
+    }
+
+    function updateUI() {
+        document.getElementById('ui-layer').innerText = game.layer;
+        document.getElementById('ui-hp').innerText = game.hp;
+        document.getElementById('ui-ammo').innerText = game.ammo;
+        document.getElementById('ui-grenade').innerText = game.grenades;
+        document.getElementById('ui-enemy-count').innerText = game.enemies.length;
+    }
+</script>
+</body>
+</html>
