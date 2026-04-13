@@ -1,0 +1,301 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>封鎖線：無限樓層 (Advanced Ver.)</title>
+    <style>
+        body { margin: 0; background: #111; color: #eee; font-family: "Microsoft JhengHei", sans-serif; overflow: hidden; }
+        #ui-layer { position: fixed; top: 10px; left: 50%; transform: translateX(-50%); width: 900px; display: flex; justify-content: space-between; background: rgba(30,30,30,0.9); padding: 15px; border-radius: 10px; border: 2px solid #555; z-index: 1000; box-shadow: 0 5px 15px rgba(0,0,0,0.5); }
+        
+        #world { position: absolute; top: 0; left: 0; width: 100vw; height: 100vh; background-color: #222; background-image: radial-gradient(#333 1px, transparent 1px); background-size: 50px 50px; }
+        
+        .entity { position: absolute; display: flex; justify-content: center; align-items: center; font-weight: bold; user-select: none; transition: transform 0.1s; }
+        .player { width: 45px; height: 45px; background: #3498db; border: 3px solid #fff; border-radius: 50%; z-index: 100; box-shadow: 0 0 20px #3498db; }
+        .enemy { width: 35px; height: 35px; background: #e74c3c; border: 2px solid #c0392b; color: white; border-radius: 50%; font-size: 10px; z-index: 50; }
+        
+        /* 動態掩體 */
+        .cover { background: #555; border: 2px solid #777; color: #aaa; font-size: 9px; border-radius: 4px; z-index: 40; }
+        
+        .bullet { width: 8px; height: 8px; background: #f1c40f; border-radius: 50%; position: absolute; box-shadow: 0 0 10px #f1c40f; }
+        .slash { width: 60px; height: 10px; background: rgba(255,255,255,0.8); position: absolute; transform-origin: left center; border-radius: 5px; animation: slashAnim 0.15s forwards; z-index: 110; }
+        
+        @keyframes slashAnim { 0% { transform: rotate(-45deg) scaleX(0); opacity: 1; } 100% { transform: rotate(45deg) scaleX(1); opacity: 0; } }
+
+        .item { width: 25px; height: 25px; border-radius: 50%; animation: pulse 1s infinite; border: 2px solid white; z-index: 30; }
+        .potion { background: #2ecc71; } 
+        .g-pack { background: #f39c12; }
+
+        .overlay { position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.85); display: flex; flex-direction: column; align-items: center; justify-content: center; z-index: 2000; text-align: center; }
+        button { padding: 15px 40px; font-size: 22px; background: #e67e22; border: none; color: white; cursor: pointer; border-radius: 8px; margin-top: 20px; }
+        .stat-val { color: #f1c40f; font-weight: bold; font-size: 22px; }
+        .weapon-active { border: 2px solid #f1c40f; padding: 2px 8px; border-radius: 5px; background: rgba(241,196,15,0.2); }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <div>層數: <span id="ui-layer-num" class="stat-val">1</span></div>
+        <div>血量: <span id="ui-hp" class="stat-val" style="color:#ff7675">50</span></div>
+        <div id="weapon-ui">
+            武器: <span id="weap-gun" class="weapon-active">槍 (<span id="ui-ammo">20</span>)</span> | 
+            <span id="weap-knife">刀</span>
+        </div>
+        <div>手榴彈: <span id="ui-grenade" class="stat-val">3</span></div>
+        <div>敵人: <span id="ui-enemy-count" class="stat-val">0</span></div>
+    </div>
+
+    <div id="world">
+        <div id="player" class="entity player">我</div>
+    </div>
+
+    <div id="overlay" class="overlay">
+        <h1 id="overlay-title">末日封鎖線：進化</h1>
+        <p id="overlay-desc">WASD移動，Q切換武器，滑鼠射擊/揮刀</p>
+        <button onclick="startGame()">開始戰鬥</button>
+    </div>
+
+<script>
+    const config = {
+        playerSpeed: 5,
+        bulletDmg: 15,
+        knifeDmg: 15,
+        grenadeDmg: 20,
+        coverMaxHp: 150
+    };
+
+    let game = {
+        active: false,
+        layer: 1,
+        hp: 50,
+        ammo: 20,
+        grenades: 3,
+        weapon: 'gun', // 'gun' or 'knife'
+        player: { x: window.innerWidth/2, y: window.innerHeight/2 },
+        keys: {},
+        enemies: [],
+        covers: [],
+        bullets: []
+    };
+
+    const world = document.getElementById('world');
+    const playerEl = document.getElementById('player');
+
+    window.onkeydown = (e) => {
+        game.keys[e.key.toLowerCase()] = true;
+        if(e.key.toLowerCase() === 'q') switchWeapon();
+        if(e.key.toLowerCase() === 'g' && game.active && game.grenades > 0) useGrenade();
+    };
+    window.onkeyup = (e) => game.keys[e.key.toLowerCase()] = false;
+
+    function switchWeapon() {
+        game.weapon = game.weapon === 'gun' ? 'knife' : 'gun';
+        document.getElementById('weap-gun').className = game.weapon === 'gun' ? 'weapon-active' : '';
+        document.getElementById('weap-knife').className = game.weapon === 'knife' ? 'weapon-active' : '';
+    }
+
+    function startGame() {
+        document.getElementById('overlay').style.display = 'none';
+        game.active = true;
+        initLevel();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function initLevel() {
+        world.querySelectorAll('.enemy, .cover, .bullet, .item').forEach(el => el.remove());
+        game.enemies = []; game.covers = [];
+        
+        // 生成敵人
+        const count = Math.pow(2, game.layer);
+        for(let i=0; i<count; i++) {
+            const el = document.createElement('div');
+            el.className = 'entity enemy';
+            world.appendChild(el);
+            game.enemies.push({
+                el, hp: 30,
+                x: Math.random() * 2000 - 1000 + game.player.x,
+                y: Math.random() * 2000 - 1000 + game.player.y,
+                vx: (Math.random()-0.5)*3, vy: (Math.random()-0.5)*3,
+                lastMove: 0, lastShoot: Date.now() + Math.random()*2000
+            });
+        }
+
+        // 生成動態掩體 (形狀角度改變)
+        const coverCount = 5 + game.layer * 2;
+        for(let i=0; i<coverCount; i++) {
+            const el = document.createElement('div');
+            el.className = 'entity cover';
+            const w = 40 + Math.random() * 100;
+            const h = 20 + Math.random() * 60;
+            const rot = Math.random() * 360;
+            el.style.width = w + 'px';
+            el.style.height = h + 'px';
+            el.style.transform = `rotate(${rot}deg)`;
+            world.appendChild(el);
+            game.covers.push({
+                el, hp: config.coverMaxHp, w, h, rot,
+                x: Math.random() * 1600 - 800 + game.player.x,
+                y: Math.random() * 1200 - 600 + game.player.y
+            });
+        }
+        updateUI();
+    }
+
+    window.onmousedown = (e) => {
+        if(!game.active) return;
+        if(game.weapon === 'gun') {
+            if(game.ammo <= 0) return;
+            game.ammo--;
+            spawnBullet(game.player.x, game.player.y, e.clientX, e.clientY, 'player');
+        } else {
+            performSlash(e.clientX, e.clientY);
+        }
+        updateUI();
+    };
+
+    function spawnBullet(x, y, tx, ty, side) {
+        const el = document.createElement('div');
+        el.className = 'bullet';
+        world.appendChild(el);
+        const angle = Math.atan2(ty - window.innerHeight/2, tx - window.innerWidth/2);
+        game.bullets.push({ el, x, y, vx: Math.cos(angle)*12, vy: Math.sin(angle)*12, side });
+    }
+
+    function performSlash(tx, ty) {
+        const angle = Math.atan2(ty - window.innerHeight/2, tx - window.innerWidth/2);
+        const slash = document.createElement('div');
+        slash.className = 'slash';
+        slash.style.left = game.player.x + 'px';
+        slash.style.top = game.player.y + 'px';
+        slash.style.transform = `rotate(${angle * 180 / Math.PI}deg)`;
+        world.appendChild(slash);
+        setTimeout(() => slash.remove(), 150);
+
+        game.enemies.forEach(en => {
+            const dist = Math.hypot(en.x - game.player.x, en.y - game.player.y);
+            if(dist < 70) {
+                en.hp -= config.knifeDmg;
+                if(en.hp <= 0) die(en);
+            }
+        });
+    }
+
+    function useGrenade() {
+        game.grenades--;
+        game.enemies.forEach(en => {
+            const dist = Math.hypot(en.x - game.player.x, en.y - game.player.y);
+            if(dist < 400) en.hp -= config.grenadeDmg;
+            if(en.hp <= 0) die(en);
+        });
+        updateUI();
+    }
+
+    function gameLoop(time) {
+        if(!game.active) return;
+
+        // WASD 移動
+        if(game.keys['w']) game.player.y -= config.playerSpeed;
+        if(game.keys['s']) game.player.y += config.playerSpeed;
+        if(game.keys['a']) game.player.x -= config.playerSpeed;
+        if(game.keys['d']) game.player.x += config.playerSpeed;
+
+        // 攝影機跟隨玩家 (移動背景)
+        world.style.transform = `translate(${-game.player.x + window.innerWidth/2}px, ${-game.player.y + window.innerHeight/2}px)`;
+        playerEl.style.left = game.player.x - 22 + 'px';
+        playerEl.style.top = game.player.y - 22 + 'px';
+
+        // 敵人AI
+        game.enemies.forEach(en => {
+            if(time - en.lastMove > 2000) {
+                en.vx = (Math.random()-0.5)*4; en.vy = (Math.random()-0.5)*4;
+                en.lastMove = time;
+            }
+            en.x += en.vx; en.y += en.vy;
+            if(Date.now() - en.lastShoot > 3000) {
+                spawnBullet(en.x, en.y, window.innerWidth/2, window.innerHeight/2, 'enemy');
+                en.lastShoot = Date.now();
+            }
+            en.el.style.left = en.x - 17 + 'px'; en.el.style.top = en.y - 17 + 'px';
+            en.el.innerText = en.hp;
+        });
+
+        // 子彈
+        for(let i=game.bullets.length-1; i>=0; i--) {
+            let b = game.bullets[i];
+            b.x += b.vx; b.y += b.vy;
+            b.el.style.left = b.x + 'px'; b.el.style.top = b.y + 'px';
+            
+            let hit = false;
+            // 撞掩體
+            game.covers.forEach(c => {
+                const dx = b.x - c.x; const dy = b.y - c.y;
+                if(Math.abs(dx) < c.w/2 && Math.abs(dy) < c.h/2) {
+                    c.hp -= 10; hit = true;
+                }
+            });
+
+            if(!hit) {
+                if(b.side === 'player') {
+                    game.enemies.forEach(en => {
+                        if(Math.hypot(b.x - en.x, b.y - en.y) < 20) { en.hp -= 15; hit = true; if(en.hp <= 0) die(en); }
+                    });
+                } else {
+                    if(Math.hypot(b.x - game.player.x, b.y - game.player.y) < 25) { game.hp -= 15; hit = true; if(game.hp <= 0) finish(false); }
+                }
+            }
+            if(hit || Math.hypot(b.x - game.player.x, b.y - game.player.y) > 2000) { b.el.remove(); game.bullets.splice(i,1); }
+        }
+
+        // 掩體損毀
+        game.covers = game.covers.filter(c => {
+            if(c.hp <= 0) { c.el.remove(); return false; }
+            c.el.style.left = c.x - c.w/2 + 'px'; c.el.style.top = c.y - c.h/2 + 'px';
+            c.el.innerText = c.hp;
+            return true;
+        });
+
+        if(game.enemies.length === 0) nextLevel();
+        updateUI();
+        requestAnimationFrame(gameLoop);
+    }
+
+    function die(en) {
+        if(Math.random() < 0.3) spawnItem(en.x, en.y);
+        game.ammo = Math.min(20, game.ammo + 6);
+        en.el.remove();
+        game.enemies = game.enemies.filter(e => e !== en);
+    }
+
+    function spawnItem(x, y) {
+        const item = document.createElement('div');
+        const isP = Math.random() > 0.5;
+        item.className = isP ? 'item potion' : 'item g-pack';
+        item.style.left = x + 'px'; item.style.top = y + 'px';
+        world.appendChild(item);
+        item.onclick = () => { if(isP) game.hp = Math.min(50, game.hp+20); else game.grenades++; item.remove(); updateUI(); };
+    }
+
+    function nextLevel() {
+        game.active = false;
+        if(game.layer >= 6) return finish(true);
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('overlay-title').innerText = `第 ${game.layer} 層 突破!`;
+        game.layer++;
+    }
+
+    function finish(win) {
+        game.active = false;
+        document.getElementById('overlay').style.display = 'flex';
+        document.getElementById('overlay-title').innerText = win ? "🏆 傳奇誕生" : "💀 戰死沙場";
+        game.layer = 1;
+    }
+
+    function updateUI() {
+        document.getElementById('ui-layer-num').innerText = game.layer;
+        document.getElementById('ui-hp').innerText = Math.max(0, game.hp);
+        document.getElementById('ui-ammo').innerText = game.ammo;
+        document.getElementById('ui-grenade').innerText = game.grenades;
+        document.getElementById('ui-enemy-count').innerText = game.enemies.length;
+    }
+</script>
+</body>
+</html>
